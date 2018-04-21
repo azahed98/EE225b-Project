@@ -18,14 +18,19 @@ DEFAULT_HPARAMS = {
 	'output_shape': (1, None, None),
 	'num_conv_groups': 5,
 	'num_conv': (2, 2, 3, 3, 3),
-	'conv_shapes': (([3, 3, 3, 64], [3, 3, 64, 128]), 
+	'conv_shapes': (([3, 3, 3, 64], [3, 3, 64, 64]), 
 					([3, 3, 64, 128], [3, 3, 128, 128]), 
 					([3, 3, 128, 256], [3, 3, 256, 256], [3, 3, 256, 256]), 
 					([3, 3, 256, 512], [3, 3, 512, 512], [3, 3, 512, 512]),
 					([3, 3, 512, 512], [3, 3, 512, 512], [3, 3, 512, 512])),
+    'deconv_shapes': (([3, 3, 32, 64], [3, 3, 64, 64]), 
+                    ([3, 3, 64, 128], [3, 3, 128, 128]), 
+                    ([3, 3, 128, 256], [3, 3, 256, 256], [3, 3, 256, 256]), 
+                    ([3, 3, 256, 512], [3, 3, 512, 512], [3, 3, 512, 512]),
+                    ([3, 3, 512, 512], [3, 3, 512, 512], [3, 3, 512, 512])),
 	'num_fc': 2,
 	'fc_shapes': ([7, 7, 512, 4096], [1, 1, 4096, 4096]),
-	'deconv_fc_shapes': ([7, 7, 512, 4096]),
+	'deconv_fc_shapes': [[7, 7, 512, 4096]],
 	'output_shape':[1, 1, 21, 32]
 }
 
@@ -115,12 +120,12 @@ class DeconvNet:
             expected = tf.expand_dims(self.y, -1)
             self.rate = tf.placeholder(tf.float32, shape=[])
 
-            conv_layers = [[None for s in range(hparams['num_conv'][i]+1)] for i in range(hparams['num_conv'])]
+            conv_layers = [[None for s in range(hparams['num_conv'][i]+1)] for i in range(hparams['num_conv_groups'])]
             fc_layers = [None for i in range(hparams['num_fc'])]
-            deconv_fc_layers = [None for i in range(hparams['num_fc'])]
-            deconv_layers = [[None for s in range(hparams['num_conv'][i]+1)] for i in range(hparams['num_conv'])]
+            deconv_fc_layers = [None for i in range(hparams['num_fc']-1)]
+            deconv_layers = [[None for s in range(hparams['num_conv'][i]+1)] for i in range(hparams['num_conv_groups'])]
             prev = self.x
-            pool_max = [None for i in range(len(hparams['num_conv_groups']))]
+            pool_max = [None for i in range(hparams['num_conv_groups'])]
             group = 0
 
             for shapes in hparams['conv_shapes']:
@@ -129,7 +134,7 @@ class DeconvNet:
                     conv_layers[group][i] = self.conv_layer(prev, shapes[i], shapes[i][-1], 'conv_'+str(group)+'_'+str(i))
                     prev = conv_layers[group][i]
                 conv_layers[group][num_c], pool_max[group] = self.pool_layer(prev)
-                prev =conv_layers[group][num_c]
+                prev = conv_layers[group][num_c]
                 group +=1
 
             for i in range(hparams['num_fc']):
@@ -138,27 +143,28 @@ class DeconvNet:
                 prev = fc_layers[i]
                 group +=1
 
-            group -= 1
+            group -= 2
 
             for i in range(hparams['num_fc']-1):
                 shape = hparams['deconv_fc_shapes'][i]
-                deconv_fc_layers[i] = self.deconv_layer(prev, shape, shape[-1], 'fc_'+str(group)+'_deconv')
+                deconv_fc_layers[i] = self.deconv_layer(prev, shape, shape[-2], 'fc_'+str(group)+'_deconv')
                 prev = deconv_fc_layers[i]
                 group -=1
 
-            for shapes in hparams['conv_shapes']:
+
+            for shapes in hparams['deconv_shapes'][::-1]:
                 num_c = hparams['num_conv'][group]
                 
                 deconv_layers[group][0] = self.unpool_layer2x2(prev, pool_max[group], hparams['conv_shapes'][group][-1])
                 prev = deconv_layers[group][0]
                 i = 1
                 for j in range(num_c-1, -1, -1):
-                    deconv_layers[group][i] = self.conv_layer(prev, shapes[i], shapes[i][-2], 'conv_'+str(group)+'_'+str(j))
+                    deconv_layers[group][i] = self.deconv_layer(prev, shapes[j], shapes[j][-2], 'conv_'+str(group)+'_'+str(j))
                     prev = deconv_layers[group][i]
                     i+=1
                 group -=1
 
-            score_1 = self.deconv_layer(deconv_1_1, hparams['output_shape'], hparams['output_shape'][-1], 'score_1')
+            score_1 = self.deconv_layer(prev, hparams['output_shape'], hparams['output_shape'][-2], 'score_1')
             logits = tf.reshape(score_1, (-1, 21))
             cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=tf.reshape(expected, [-1]), logits=logits, name='x_entropy')
             self.loss = tf.reduce_mean(cross_entropy, name='x_entropy_mean')
@@ -168,10 +174,10 @@ class DeconvNet:
             self.prediction = tf.argmax(tf.reshape(tf.nn.softmax(logits), tf.shape(score_1)), dimension=3)
             self.accuracy = tf.reduce_sum(tf.pow(self.prediction - expected, 2))
 
-    def conv_layer(self, x, w_shape, b_shape, name, padding:'SAME'):
-        W = tf.Variable(tf.truncated_normal(w_shape , stddev = 0.1))
-        b = tf.Variable(tf.constant(.1, shape=b_shape))
-        return tf.nn.relu(tf.nn.conv2d(x, W, strides = [1, 1, 1, 1], padding= padding) + b)
+    def conv_layer(self, x, w_shape, b_shape, name, padding='SAME'):
+        W = tf.Variable(tf.truncated_normal(w_shape, stddev = 0.1))
+        b = tf.Variable(tf.constant(.1, shape=[b_shape]))
+        return tf.nn.relu(tf.nn.conv2d(x, W, strides = [1, 1, 1, 1], padding=padding) + b)
 
     def pool_layer(self, x):
         '''
@@ -188,11 +194,11 @@ class DeconvNet:
 
     def deconv_layer(self, x, w_shape, b_shape, name, padding='SAME'):
         W = tf.Variable(tf.truncated_normal(w_shape , stddev = 0.1))
-        b = tf.Variable(tf.constant(.1, shape=b_shape))
+        b = tf.Variable(tf.constant(.1, shape=[b_shape]))
 
         x_shape = tf.shape(x)
-        out_shape = tf.stack([x_shape[0], x_shape[1], x_shape[1], W_shape[2]])
-        return tf.nn.conv2d_transpose(x, W, out_shape, [1, 1, 1, 1], padding=padding) +b
+        out_shape = tf.stack([x_shape[0], x_shape[1], x_shape[1], w_shape[2]])
+        return tf.nn.conv2d_transpose(x, W, out_shape, [1, 1, 1, 1], padding=padding) + b
 
 
     def unpool_layer2x2(self, x, raveled_argmax, out_shape):
