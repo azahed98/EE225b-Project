@@ -1,3 +1,8 @@
+"""Essentially the same as 
+https://github.com/fabianbormann/Tensorflow-DeconvNet-Segmentation/tree/master/data
+but with some changes to make it easy to alter
+"""
+
 import os
 import random
 import tensorflow as tf
@@ -263,4 +268,3 @@ class DeconvNet:
         delta = tf.SparseTensor(indices, values, tf.to_int64(out_shape))
         return tf.sparse_tensor_to_dense(tf.sparse_reorder(delta))
 
-        
